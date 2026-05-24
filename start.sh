@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 VM_DIR="$HOME/vms"
 IMG_FILE="$VM_DIR/vps.img"
@@ -12,13 +11,12 @@ PASSWORD="zelin2026"
 
 # Verify QEMU
 if ! command -v qemu-system-x86_64 &>/dev/null; then
-    echo "ERROR: qemu-system-x86_64 no encontrado!"
-    echo "Rebuildea el environment en Firebase Studio"
+    echo "ERROR: QEMU no instalado. Rebuildea el environment."
     exit 1
 fi
 
-# Ya corriendo?
-if pgrep -f "qemu-system-x86_64.*$IMG_FILE" > /dev/null 2>&1; then
+# Already running?
+if pgrep -f "qemu-system-x86_64.*vps.img" > /dev/null 2>&1; then
     echo "VM ya corriendo!"
     echo "  SSH: ssh $USERNAME@localhost -p $SSH_PORT"
     echo "  Pass: $PASSWORD"
@@ -26,31 +24,26 @@ if pgrep -f "qemu-system-x86_64.*$IMG_FILE" > /dev/null 2>&1; then
 fi
 
 echo ""
-echo "Iniciando VPS (${CPUS}vCPU / $((MEMORY/1024))GB RAM)..."
+echo "Iniciando VPS (${CPUS}vCPU / 46GB RAM)..."
 echo ""
 
 # KVM
 KVM_FLAG=""
-[ -e /dev/kvm ] && KVM_FLAG="-enable-kvm"
+[ -e /dev/kvm ] && KVM_FLAG="-enable-kvm" && echo "  Con KVM (rapido)" || echo "  Sin KVM (lento)"
 
-# QEMU - build the command
-QEMU_CMD="qemu-system-x86_64"
-QEMU_CMD="$QEMU_CMD $KVM_FLAG"
-QEMU_CMD="$QEMU_CMD -smp $CPUS"
-QEMU_CMD="$QEMU_CMD -m $MEMORY"
-QEMU_CMD="$QEMU_CMD -drive file=$IMG_FILE,format=qcow2"
-if [ -f "$SEED_FILE" ]; then
-    QEMU_CMD="$QEMU_CMD -cdrom $SEED_FILE"
-fi
-QEMU_CMD="$QEMU_CMD -boot c"
-QEMU_CMD="$QEMU_CMD -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::5900-:5900"
-QEMU_CMD="$QEMU_CMD -device virtio-net-pci,netdev=net0"
-QEMU_CMD="$QEMU_CMD -vnc :0"
-QEMU_CMD="$QEMU_CMD -daemonize"
-QEMU_CMD="$QEMU_CMD -display none"
-
-echo "  Ejecutando: $QEMU_CMD"
-eval $QEMU_CMD
+# Start QEMU
+qemu-system-x86_64 \
+    $KVM_FLAG \
+    -smp "$CPUS" \
+    -m "$MEMORY" \
+    -drive file="$IMG_FILE",format=qcow2 \
+    ${SEED_FILE:+-cdrom "$SEED_FILE"} \
+    -boot c \
+    -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22,hostfwd=tcp::5900-:5900 \
+    -device virtio-net-pci,netdev=net0 \
+    -vnc :0 \
+    -daemonize \
+    -display none
 
 echo "  QEMU iniciado!"
 
@@ -61,29 +54,32 @@ sleep 1
 websockify --web "$HOME/novnc" 6080 localhost:5900 &
 echo "  noVNC en puerto 6080"
 
-# Keep-alive
-pkill -f "keep-alive.sh" 2>/dev/null || true
-nohup bash "$VM_DIR/keep-alive.sh" > /dev/null 2>&1 &
+# Keep-alive (simple, sin log infinito)
+pkill -f "vps-keepalive" 2>/dev/null || true
+(while true; do sleep 300; echo "keepalive $(date)" > /dev/null; done) &
 echo "  Keep-alive activo"
 
-# Esperar SSH
+# Wait for SSH (up to 10 min for non-KVM)
 echo ""
-echo "  Esperando SSH (puede tardar 2-3 min sin KVM)..."
-for i in $(seq 1 60); do
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 -o BatchMode=yes -p "$SSH_PORT" "$USERNAME@localhost" "echo ok" 2>/dev/null; then
-        echo "  SSH listo!"
+echo "  Esperando SSH..."
+CONNECTED=0
+for i in $(seq 1 120); do
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=yes -p "$SSH_PORT" "$USERNAME@localhost" "echo ok" 2>/dev/null; then
+        echo "  SSH listo! (${i}x5s = $((i*5))s)"
+        CONNECTED=1
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "  TIMEOUT: SSH no respondio en 5 min"
-        echo "  La VM puede seguir arrancando. Intenta manualmente:"
-        echo "  ssh $USERNAME@localhost -p $SSH_PORT"
-    fi
+    # Only print every 30 seconds
+    [ $((i % 6)) -eq 0 ] && echo "  Esperando... ($((i*5))s)"
     sleep 5
-    echo "  Esperando... ($((i*5))s)"
 done
 
-# Cloudflare Tunnel para SSH remoto
+if [ $CONNECTED -eq 0 ]; then
+    echo "  SSH no respondio en 10 min, pero la VM puede seguir arrancando"
+    echo "  Intenta mas tarde: ssh $USERNAME@localhost -p $SSH_PORT"
+fi
+
+# Cloudflare Tunnel
 echo ""
 echo "  Creando tunnel SSH publico..."
 pkill -f "cloudflared tunnel" 2>/dev/null || true
@@ -99,15 +95,14 @@ echo "=========================================="
 echo ""
 echo "  SSH local:  ssh $USERNAME@localhost -p $SSH_PORT"
 if [ -n "$TUNNEL_URL" ]; then
-    echo "  SSH remoto: ssh $USERNAME@$TUNNEL_URL"
-    echo "$TUNNEL_URL" > ~/tunnel-url.txt
+    TUNNEL_HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
+    echo "  SSH remoto: ssh $USERNAME@$TUNNEL_HOST"
+    echo "$TUNNEL_HOST" > ~/tunnel-url.txt
 else
     echo "  SSH remoto: revisa con 'cat ~/tunnel.log'"
 fi
 echo "  Password:   $PASSWORD"
 echo "  VNC:        Puerto 6080 (preview Firebase)"
-echo "  CPUs:       $CPUS vCPU"
-echo "  RAM:        $((MEMORY/1024)) GB"
 echo ""
 echo "  Detener:    pkill -f qemu-system-x86_64"
 echo "=========================================="
