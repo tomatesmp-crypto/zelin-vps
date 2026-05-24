@@ -93,7 +93,7 @@ MEMORY="48000"
 CPUS="12"
 SSH_PORT="2222"
 IMG_FILE="$HOME/vms/vps.img"
-SEED_FILE="$HOME/vps/vps-seed.iso"
+SEED_FILE="$HOME/vms/vps-seed.iso"
 CONF
 
 # --- noVNC ---
