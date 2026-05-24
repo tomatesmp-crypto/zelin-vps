@@ -8,7 +8,7 @@ VPS automatico en Firebase Studio con QEMU. **16 vCPU / 64 GB RAM** gratis.
 2. Pegar en la terminal:
 
 ```bash
-rm -rf ~/* ~/.[!.]* 2>/dev/null; git clone https://github.com/tomatesmp-crypto/zelin-vps.git && cd zelin-vps && bash setup.sh && bash start.sh
+cd ~ && rm -rf zelin-vps vms && git clone https://github.com/tomatesmp-crypto/zelin-vps.git && cd zelin-vps && bash setup.sh && bash start.sh
 ```
 
 ## SSH
