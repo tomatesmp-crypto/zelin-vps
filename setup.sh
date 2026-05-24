@@ -11,6 +11,22 @@ VM_DIR="$HOME/vms"
 IMG_FILE="$VM_DIR/vps.img"
 SEED_FILE="$VM_DIR/vps-seed.iso"
 
+# --- Verify QEMU exists ---
+echo "[0/5] Verificando paquetes Nix..."
+if command -v qemu-system-x86_64 &>/dev/null; then
+    echo "  QEMU OK: $(qemu-system-x86_64 --version 2>&1 | head -1)"
+else
+    echo "  ERROR: qemu-system-x86_64 no encontrado!"
+    echo "  Rebuildea el environment para que dev.nix instale QEMU"
+    exit 1
+fi
+
+if command -v mkisofs &>/dev/null; then
+    echo "  cdrtools OK"
+else
+    echo "  WARNING: mkisofs no encontrado, cloud-init puede fallar"
+fi
+
 # --- 1. KVM ---
 echo "[1/5] Verificando KVM..."
 if [ -e /dev/kvm ]; then
@@ -20,7 +36,11 @@ else
     sudo modprobe kvm_intel 2>/dev/null || sudo modprobe kvm_amd 2>/dev/null || true
     sudo mknod /dev/kvm c 10 232 2>/dev/null || true
     sudo chmod 666 /dev/kvm 2>/dev/null || true
-    [ -e /dev/kvm ] && echo "  KVM activado!" || echo "  Sin KVM - VM sera lenta"
+    if [ -e /dev/kvm ]; then
+        echo "  KVM activado!"
+    else
+        echo "  Sin KVM - VM sera lenta pero funcional"
+    fi
 fi
 
 # --- 2. Directorio ---
@@ -39,7 +59,7 @@ fi
 
 # --- 4. Redimensionar ---
 echo "[4/5] Redimensionando disco a 80G..."
-qemu-img resize "$IMG_FILE" 80G 2>/dev/null || qemu-img create -f qcow2 -F qcow2 -b "$IMG_FILE" "$IMG_FILE.tmp" 80G 2>/dev/null && mv "$IMG_FILE.tmp" "$IMG_FILE" 2>/dev/null || true
+qemu-img resize "$IMG_FILE" 80G
 
 # --- 5. Cloud-init ---
 echo "[5/5] Configurando cloud-init..."
@@ -79,7 +99,17 @@ instance-id: zelin-vps
 local-hostname: zelin-vps
 MD
 
-genisoimage -output "$SEED_FILE" -volid cidata -joliet -rock /tmp/ci/user-data /tmp/ci/meta-data 2>/dev/null || cloud-localds "$SEED_FILE" /tmp/ci/user-data /tmp/ci/meta-data 2>/dev/null || true
+# Use mkisofs from cdrtools (Nix package)
+if command -v mkisofs &>/dev/null; then
+    mkisofs -output "$SEED_FILE" -volid cidata -joliet -rock /tmp/ci/user-data /tmp/ci/meta-data
+elif command -v genisoimage &>/dev/null; then
+    genisoimage -output "$SEED_FILE" -volid cidata -joliet -rock /tmp/ci/user-data /tmp/ci/meta-data
+elif command -v cloud-localds &>/dev/null; then
+    cloud-localds "$SEED_FILE" /tmp/ci/user-data /tmp/ci/meta-data
+else
+    echo "  WARNING: No se pudo crear ISO de cloud-init"
+    echo "  La VM arrancara pero sin usuario zelin preconfigurado"
+fi
 rm -rf /tmp/ci
 
 # --- Guardar config ---
@@ -97,21 +127,26 @@ SEED_FILE="$HOME/vms/vps-seed.iso"
 CONF
 
 # --- noVNC ---
-echo "Instalando noVNC..."
-if [ ! -d /usr/share/novnc ]; then
-    sudo apt-get update -qq 2>/dev/null
-    sudo apt-get install -y -qq novnc websockify 2>/dev/null || {
-        sudo mkdir -p /usr/share/novnc
-        wget -q "https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz" -O /tmp/novnc.tar.gz 2>/dev/null && sudo tar xzf /tmp/novnc.tar.gz -C /usr/share/novnc --strip-components=1 2>/dev/null || true
-    }
+echo "Configurando noVNC..."
+if [ ! -d "$HOME/novnc" ]; then
+    mkdir -p "$HOME/novnc"
+    wget -q "https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz" -O /tmp/novnc.tar.gz
+    tar xzf /tmp/novnc.tar.gz -C "$HOME/novnc" --strip-components=1
+    echo "  noVNC instalado en ~/novnc"
+else
+    echo "  noVNC ya existe"
 fi
 
 # --- Cloudflare Tunnel ---
 echo "Instalando Cloudflare Tunnel..."
-[ -f /usr/local/bin/cloudflared ] || {
-    curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cf
-    sudo mv /tmp/cf /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared
-}
+if [ ! -f "$HOME/bin/cloudflared" ]; then
+    mkdir -p "$HOME/bin"
+    curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$HOME/bin/cloudflared"
+    chmod +x "$HOME/bin/cloudflared"
+    echo "  cloudflared instalado en ~/bin"
+else
+    echo "  cloudflared ya existe"
+fi
 
 # --- Keep-alive ---
 cat > "$VM_DIR/keep-alive.sh" << 'KA'
